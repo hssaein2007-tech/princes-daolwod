@@ -218,7 +218,6 @@ def humanize_ydlp_error(url: str, exc: Exception) -> str:
 
     return raw
 
-
 def build_ytdlp_opts(
     extra: dict[str, Any] | None = None,
     *,
@@ -234,6 +233,11 @@ def build_ytdlp_opts(
         "extractor_retries": 5,
         "concurrent_fragment_downloads": 5,
         "http_chunk_size": 10 * 1024 * 1024,
+
+        # مهم مع TikTok
+        "impersonate": "chrome",
+        "forceipv4": True,
+
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -241,7 +245,7 @@ def build_ytdlp_opts(
                 "Chrome/133.0.0.0 Safari/537.36"
             ),
             "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
-            "Referer": "https://www.google.com/",
+            "Referer": "https://www.tiktok.com/",
         },
     }
 
