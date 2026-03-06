@@ -217,23 +217,23 @@ def humanize_ydlp_error(url: str, exc: Exception) -> str:
         )
 
     return raw
+opts = {
+    "quiet": True,
+    "no_warnings": True,
+    "noplaylist": True,
+    "retries": 10,
+    "fragment_retries": 10,
+    "extractor_retries": 5,
+    "socket_timeout": 30,
 
-def build_ytdlp_opts(
-    extra: dict[str, Any] | None = None,
-    *,
-    url: str = "",
-) -> dict[str, Any]:
-    opts: dict[str, Any] = {
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "socket_timeout": 30,
-        "retries": 10,
-        "fragment_retries": 10,
-        "extractor_retries": 5,
-        "concurrent_fragment_downloads": 5,
-        "http_chunk_size": 10 * 1024 * 1024,
+    "impersonate": "chrome110",
+    "forceipv4": True,
 
+    "http_headers": {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://www.tiktok.com/"
+    }
+}
         # مهم مع TikTok
         "impersonate": "chrome",
         "forceipv4": True,
