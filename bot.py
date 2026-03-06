@@ -162,22 +162,27 @@ def beautiful_empty_story_message() -> str:
 def short_token() -> str:
     return secrets.token_hex(4)
 
+def build_ytdlp_opts(extra=None):
 
-def build_ytdlp_opts(extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    opts: dict[str, Any] = {
+    opts = {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
-        "socket_timeout": 30,
-        "retries": 5,
-        "fragment_retries": 5,
+        "retries": 10,
+        "fragment_retries": 10,
         "concurrent_fragment_downloads": 5,
-        "http_chunk_size": 10 * 1024 * 1024,
+        "socket_timeout": 30,
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0"
+        }
     }
+
     if COOKIES_FILE and Path(COOKIES_FILE).exists():
         opts["cookiefile"] = COOKIES_FILE
+
     if extra:
         opts.update(extra)
+
     return opts
 
 
