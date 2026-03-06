@@ -17,7 +17,7 @@ from typing import Any
 
 import yt_dlp
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, BotCommand
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
     Application,
@@ -30,13 +30,16 @@ from telegram.ext import (
 
 load_dotenv()
 
-TOKEN = os.getenv("BOT_TOKEN", "")
+TOKEN = os.getenv("BOT_TOKEN", "").strip()
 BOT_NAME = os.getenv("BOT_NAME", "الأمراء | 𝔞𝔩 𝔭𝔯𝔧𝔫𝔠𝔢𝔰")
 CANAL_URL = os.getenv("CANAL_URL", "https://t.me/example")
 SOURCE_URL = os.getenv("SOURCE_URL", "https://github.com/example/princes-bot")
 DEVELOPER_URL = os.getenv("DEVELOPER_URL", "https://t.me/example_dev")
 START_PHOTO_URL = os.getenv("START_PHOTO_URL", "https://example.com/your-static-image.jpg")
+
 COOKIES_FILE = os.getenv("COOKIES_FILE", "").strip()
+PROXY_URL = os.getenv("PROXY_URL", "").strip()
+
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "49"))
 DOWNLOAD_TIMEOUT = int(os.getenv("DOWNLOAD_TIMEOUT", "300"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -46,6 +49,14 @@ DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 # Optional Instagram session support
 IG_LOGIN_USER = os.getenv("IG_LOGIN_USER", "").strip()
 IG_SESSIONFILE = os.getenv("IG_SESSIONFILE", "").strip()
+
+# Optional TikTok tuning
+TIKTOK_DEVICE_ID = os.getenv("TIKTOK_DEVICE_ID", "").strip()
+TIKTOK_APP_INFO = os.getenv("TIKTOK_APP_INFO", "").strip()
+TIKTOK_API_HOSTNAME = os.getenv(
+    "TIKTOK_API_HOSTNAME",
+    "api16-normal-c-useast1a.tiktokv.com",
+).strip()
 
 # Optional placeholder for future Telegram-user-session integration
 ENABLE_TELEGRAM_STORIES = os.getenv("ENABLE_TELEGRAM_STORIES", "false").lower() == "true"
@@ -59,6 +70,10 @@ IG_PROFILE_RE = re.compile(
     re.IGNORECASE,
 )
 TG_USERNAME_RE = re.compile(r"^@([A-Za-z0-9_]{5,32})$")
+TIKTOK_URL_RE = re.compile(
+    r"^https?://(?:www\.)?(?:m\.)?(?:tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)/",
+    re.IGNORECASE,
+)
 
 SUPPORTED_QUALITY_LABELS = [
     (480, "480P"),
@@ -143,7 +158,10 @@ def start_caption() -> str:
 def main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("CANAL", url=CANAL_URL), InlineKeyboardButton("𝐒𝐨𝐮𝐫𝐜𝐞 𝐏𝐫𝐢𝐧𝐜𝐞𝐬™", url=SOURCE_URL)],
+            [
+                InlineKeyboardButton("CANAL", url=CANAL_URL),
+                InlineKeyboardButton("𝐒𝐨𝐮𝐫𝐜𝐞 𝐏𝐫𝐢𝐧𝐜𝐞𝐬™", url=SOURCE_URL),
+            ],
             [InlineKeyboardButton("المطور", url=DEVELOPER_URL)],
             [InlineKeyboardButton("الأوامر", callback_data="menu:help")],
         ]
@@ -155,30 +173,89 @@ def back_keyboard() -> InlineKeyboardMarkup:
 
 
 def beautiful_empty_story_message() -> str:
-    # Link is decorative only so the text shows with link styling.
     return '<a href="https://t.me/share/url">هذا الشخص ماعنده ستوريات…🚫</a>'
 
 
 def short_token() -> str:
     return secrets.token_hex(4)
 
-def build_ytdlp_opts(extra=None):
 
-    opts = {
+def is_tiktok_url(url: str) -> bool:
+    return bool(TIKTOK_URL_RE.match(url.strip()))
+
+
+def build_tiktok_extractor_args() -> dict[str, list[str]]:
+    args: dict[str, list[str]] = {
+        "api_hostname": [TIKTOK_API_HOSTNAME],
+    }
+    if TIKTOK_DEVICE_ID:
+        args["device_id"] = [TIKTOK_DEVICE_ID]
+    if TIKTOK_APP_INFO:
+        args["app_info"] = [TIKTOK_APP_INFO]
+    return args
+
+
+def humanize_ydlp_error(url: str, exc: Exception) -> str:
+    raw = str(exc).strip()
+    lower = raw.lower()
+
+    if is_tiktok_url(url) and ("10231" in raw or "video not available" in lower):
+        return (
+            "تيك توك رفض هذا الرابط من جهة السيرفر أو يحتاج كوكيز/هوية جهاز أحدث.\n\n"
+            "الحلول المقترحة:\n"
+            "1) حدّث cookies.txt من حساب TikTok مسجل دخول.\n"
+            "2) تأكد أن COOKIES_FILE يشير للمسار الصحيح.\n"
+            "3) إذا استمرت المشكلة أضف PROXY_URL.\n"
+            "4) اختياريًا أضف TIKTOK_DEVICE_ID و TIKTOK_APP_INFO.\n\n"
+            f"الخطأ الأصلي:\n{raw}"
+        )
+
+    if "cookies" in lower or "login required" in lower or "authentication" in lower:
+        return (
+            "هذا الرابط يحتاج تسجيل دخول أو كوكيز صالحة.\n"
+            f"الخطأ الأصلي:\n{raw}"
+        )
+
+    return raw
+
+
+def build_ytdlp_opts(
+    extra: dict[str, Any] | None = None,
+    *,
+    url: str = "",
+) -> dict[str, Any]:
+    opts: dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
+        "socket_timeout": 30,
         "retries": 10,
         "fragment_retries": 10,
+        "extractor_retries": 5,
         "concurrent_fragment_downloads": 5,
-        "socket_timeout": 30,
+        "http_chunk_size": 10 * 1024 * 1024,
         "http_headers": {
-            "User-Agent": "Mozilla/5.0"
-        }
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/133.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
+            "Referer": "https://www.google.com/",
+        },
     }
 
     if COOKIES_FILE and Path(COOKIES_FILE).exists():
         opts["cookiefile"] = COOKIES_FILE
+
+    if PROXY_URL:
+        opts["proxy"] = PROXY_URL
+
+    if is_tiktok_url(url):
+        opts["extractor_args"] = {
+            "tiktok": build_tiktok_extractor_args(),
+        }
+        opts["format_sort"] = ["res", "codec:h264", "ext:mp4:m4a"]
 
     if extra:
         opts.update(extra)
@@ -186,12 +263,36 @@ def build_ytdlp_opts(extra=None):
     return opts
 
 
-def extract_media_info(url: str) -> MediaInfo:
-    with yt_dlp.YoutubeDL(build_ytdlp_opts()) as ydl:
-        info = ydl.extract_info(url, download=False)
+def run_ytdlp_extract(
+    url: str,
+    *,
+    download: bool,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    attempts: list[dict[str, Any]] = [build_ytdlp_opts(extra=extra, url=url)]
 
-    if not info:
-        raise RuntimeError("تعذر قراءة الرابط.")
+    if is_tiktok_url(url) and COOKIES_FILE:
+        second = build_ytdlp_opts(extra=extra, url=url)
+        second.pop("cookiefile", None)
+        attempts.append(second)
+
+    last_exc: Exception | None = None
+
+    for opts in attempts:
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=download)
+                if not info:
+                    raise RuntimeError("تعذر قراءة الرابط.")
+                return info
+        except Exception as exc:
+            last_exc = exc
+
+    raise RuntimeError(humanize_ydlp_error(url, last_exc or RuntimeError("Unknown error")))
+
+
+def extract_media_info(url: str) -> MediaInfo:
+    info = run_ytdlp_extract(url, download=False)
 
     if info.get("_type") == "url":
         raise RuntimeError("هذا الرابط يحيل إلى رابط آخر ولم أستطع قراءته بشكل مباشر.")
@@ -206,10 +307,18 @@ def extract_media_info(url: str) -> MediaInfo:
             and not str(fmt.get("format_note", "")).lower().startswith("audio")
         }
     )
+
     title = str(info.get("title") or "Untitled")[:180]
     extractor = str(info.get("extractor_key") or info.get("extractor") or "Unknown")
     webpage_url = str(info.get("webpage_url") or url)
-    return MediaInfo(url=url, title=title, extractor=extractor, webpage_url=webpage_url, available_heights=heights)
+
+    return MediaInfo(
+        url=url,
+        title=title,
+        extractor=extractor,
+        webpage_url=webpage_url,
+        available_heights=heights,
+    )
 
 
 def quality_keyboard(token: str, info: MediaInfo) -> InlineKeyboardMarkup:
@@ -234,7 +343,12 @@ def quality_keyboard(token: str, info: MediaInfo) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def format_selector(max_height: int) -> str:
+def format_selector(url: str, max_height: int) -> str:
+    if is_tiktok_url(url):
+        if max_height and max_height > 0:
+            return f"best[height<={max_height}][ext=mp4]/best[height<={max_height}]/best"
+        return "best[ext=mp4]/best"
+
     if max_height and max_height > 0:
         return (
             f"bestvideo[height<={max_height}][ext=mp4]+bestaudio[ext=m4a]/"
@@ -242,24 +356,26 @@ def format_selector(max_height: int) -> str:
             f"best[height<={max_height}][ext=mp4]/"
             f"best[height<={max_height}]/best"
         )
+
     return "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
 
 
 def download_media(url: str, max_height: int = 0) -> tuple[Path, str]:
     tempdir = Path(tempfile.mkdtemp(prefix="princes_media_", dir=str(DOWNLOAD_DIR)))
     outtmpl = str(tempdir / "%(title).90s [%(id)s].%(ext)s")
-    opts = build_ytdlp_opts(
-        {
+
+    info = run_ytdlp_extract(
+        url,
+        download=True,
+        extra={
             "outtmpl": outtmpl,
-            "format": format_selector(max_height),
+            "format": format_selector(url, max_height),
             "merge_output_format": "mp4",
             "windowsfilenames": True,
-        }
+        },
     )
 
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        title = str(info.get("title") or "Untitled")[:180]
+    title = str(info.get("title") or "Untitled")[:180]
 
     media_files = [
         p
@@ -275,11 +391,10 @@ def download_media(url: str, max_height: int = 0) -> tuple[Path, str]:
 
 def run_instaloader_cli(username: str, mode: str) -> list[Path]:
     if not IG_LOGIN_USER or not IG_SESSIONFILE or not Path(IG_SESSIONFILE).exists():
-        raise RuntimeError(
-            "ميزة إنستغرام المتقدمة تحتاج IG_LOGIN_USER و IG_SESSIONFILE صالحين داخل Railway."
-        )
+        raise RuntimeError("ميزة إنستغرام المتقدمة تحتاج IG_LOGIN_USER و IG_SESSIONFILE صالحين داخل Railway.")
 
     target_dir = Path(tempfile.mkdtemp(prefix=f"ig_{mode}_", dir=str(DOWNLOAD_DIR)))
+
     cmd = [
         "instaloader",
         "--quiet",
@@ -314,6 +429,7 @@ def run_instaloader_cli(username: str, mode: str) -> list[Path]:
     import subprocess
 
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
+
     if proc.returncode not in (0, 1):
         err = (proc.stderr or proc.stdout or "خطأ غير معروف").strip()[-800:]
         raise RuntimeError(f"فشل تحميل محتوى إنستغرام: {err}")
@@ -356,6 +472,7 @@ async def send_media_file(
 
     suffix = file_path.suffix.lower()
     mime, _ = mimetypes.guess_type(str(file_path))
+
     with file_path.open("rb") as fh:
         if suffix == ".mp4":
             await context.bot.send_video(
@@ -384,11 +501,11 @@ async def send_media_file(
             )
 
 
-async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
+async def send_home_message(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
     if START_PHOTO_URL and START_PHOTO_URL.startswith("http"):
         try:
-            await message.reply_photo(
+            await context.bot.send_photo(
+                chat_id=chat_id,
                 photo=START_PHOTO_URL,
                 caption=start_caption(),
                 parse_mode=ParseMode.HTML,
@@ -398,12 +515,17 @@ async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception:
             logger.exception("Failed to send start image; falling back to text")
 
-    await message.reply_text(
-        start_caption(),
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=start_caption(),
         parse_mode=ParseMode.HTML,
         reply_markup=main_keyboard(),
         disable_web_page_preview=True,
     )
+
+
+async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await send_home_message(update.effective_chat.id, context)
 
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -437,38 +559,26 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     data = query.data or ""
 
     if data == "menu:help":
-        await query.message.edit_text(
-            help_text(),
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+
+        await context.bot.send_message(
+            chat_id=query.message.chat.id,
+            text=help_text(),
             parse_mode=ParseMode.HTML,
             reply_markup=back_keyboard(),
             disable_web_page_preview=True,
         )
-    elif data == "menu:home":
+        return
+
+    if data == "menu:home":
         try:
-            if START_PHOTO_URL and START_PHOTO_URL.startswith("http"):
-                await query.message.delete()
-                await context.bot.send_photo(
-                    chat_id=query.message.chat_id,
-                    photo=START_PHOTO_URL,
-                    caption=start_caption(),
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=main_keyboard(),
-                )
-            else:
-                await query.message.edit_text(
-                    start_caption(),
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=main_keyboard(),
-                    disable_web_page_preview=True,
-                )
+            await query.message.delete()
         except Exception:
-            await context.bot.send_message(
-                chat_id=query.message.chat_id,
-                text=start_caption(),
-                parse_mode=ParseMode.HTML,
-                reply_markup=main_keyboard(),
-                disable_web_page_preview=True,
-            )
+            pass
+        await send_home_message(query.message.chat.id, context)
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -498,6 +608,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     tg_match = TG_USERNAME_RE.match(text)
     if tg_match:
         username = tg_match.group(1)
+
         if not ENABLE_TELEGRAM_STORIES:
             await update.effective_message.reply_text(
                 (
@@ -533,7 +644,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         info = await asyncio.wait_for(asyncio.to_thread(extract_media_info, url), timeout=90)
     except Exception as exc:
         logger.exception("Failed to extract info for %s", url)
-        await wait_msg.edit_text(f"تعذر قراءة الرابط:\n<code>{html.escape(str(exc))}</code>", parse_mode=ParseMode.HTML)
+        await wait_msg.edit_text(
+            f"تعذر قراءة الرابط:\n<code>{html.escape(str(exc))}</code>",
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     token = short_token()
@@ -546,6 +660,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     }
 
     heights_text = ", ".join(f"{h}p" for h in info.available_heights[-6:]) if info.available_heights else "غير معروفة"
+
     await wait_msg.edit_text(
         (
             f"<b>{html.escape(info.title)}</b>\n"
@@ -572,6 +687,7 @@ async def on_download_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     _, token, height_str = data.split(":", 2)
     payload = REQUEST_CACHE.get(token)
+
     if not payload:
         await query.message.edit_text("انتهت صلاحية هذا الطلب. أرسل الرابط من جديد.")
         return
@@ -580,8 +696,11 @@ async def on_download_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     title = payload["title"]
     url = payload["url"]
 
-    await query.message.edit_text(f"جاري تنزيل: <b>{html.escape(title)}</b>", parse_mode=ParseMode.HTML)
-    await context.bot.send_chat_action(chat_id=query.message.chat_id, action=ChatAction.UPLOAD_VIDEO)
+    await query.message.edit_text(
+        f"جاري تنزيل: <b>{html.escape(title)}</b>",
+        parse_mode=ParseMode.HTML,
+    )
+    await context.bot.send_chat_action(chat_id=query.message.chat.id, action=ChatAction.UPLOAD_VIDEO)
 
     file_path: Path | None = None
     try:
@@ -589,6 +708,7 @@ async def on_download_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             asyncio.to_thread(download_media, url, max_height),
             timeout=DOWNLOAD_TIMEOUT,
         )
+
         quality_label = f"{max_height}P" if max_height else "أفضل جودة"
         if max_height == 1440:
             quality_label = "2K"
@@ -615,6 +735,7 @@ async def on_download_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 async def on_instagram_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
+
     _, token, mode = (query.data or "").split(":", 2)
     payload = REQUEST_CACHE.get(token)
 
@@ -624,10 +745,18 @@ async def on_instagram_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     username = payload["username"]
     title = "الستوريات" if mode == "stories" else "الهايلايت"
-    await query.message.edit_text(f"جاري محاولة تحميل {title} لـ <b>@{html.escape(username)}</b>…", parse_mode=ParseMode.HTML)
+
+    await query.message.edit_text(
+        f"جاري محاولة تحميل {title} لـ <b>@{html.escape(username)}</b>…",
+        parse_mode=ParseMode.HTML,
+    )
 
     try:
-        files = await asyncio.wait_for(asyncio.to_thread(run_instaloader_cli, username, mode), timeout=DOWNLOAD_TIMEOUT)
+        files = await asyncio.wait_for(
+            asyncio.to_thread(run_instaloader_cli, username, mode),
+            timeout=DOWNLOAD_TIMEOUT,
+        )
+
         if not files:
             await query.message.edit_text(
                 beautiful_empty_story_message(),
@@ -647,13 +776,13 @@ async def on_instagram_callback(update: Update, context: ContextTypes.DEFAULT_TY
             sent += 1
             await safe_delete(path)
 
-        # Clean any remaining temp root directory.
         if files:
             await safe_delete(files[0].parent)
 
         extra = ""
         if len(files) > 20:
             extra = f"\nتم إرسال أول 20 ملف فقط من أصل {len(files)} لتجنب الإغراق."
+
         await query.message.edit_text(
             f"اكتمل الإرسال لـ <b>@{html.escape(username)}</b>.\nعدد الملفات المرسلة: {sent}{extra}",
             parse_mode=ParseMode.HTML,
